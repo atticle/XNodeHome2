@@ -30,7 +30,7 @@
   - readLine(): 시리얼로부터 줄단위 문자열 수신. 줄단위 문자가 수신될 때까지 대기함
 
 ## PC에서 시리얼 통신
-PC의 시리얼 포트에서 파이썬으로 데이터를 읽고 쓰려면 pyserial 라이브러리 사용하며, xnode 툴을 설치하면 함께 설치됨 
+PC의 시리얼 포트에서 파이썬으로 데이터를 읽고 쓰려면 pyserial 라이브러리 사용하며, replx 툴을 설치하면 함께 설치됨 
 
 ### pyserial
 
@@ -65,14 +65,17 @@ PC에서 전송한 문자열을 실습장비가 다시 PC로 전송함으로써 
 
 1. PC에서 실습장비를 위한 새 파일(serial_xnode.py)을 만든 후 다음 코드 입력
 ```python
-from xnode.pop.core import Uart
+from xnode import ReplSerial
+
+serial = ReplSerial(0.1)
 
 def setup():
     pass
 
 def loop():
-    cmd = Uart.readLine()
-    Uart.write(cmd)
+    cmd = serial.read_until(b"\r\n")
+    if cmd:
+        serial.write(cmd)
         
 if __name__ == "__main__":
     setup()
@@ -80,19 +83,19 @@ if __name__ == "__main__":
         loop()
 ```
 
-- 마이크로파이썬의 input(), print() 대신 pop 라이브러리의 Uart.readLine()과 Uart.write() 권장
+- 마이크로파이썬의 input(), print() 대신 xnode 라이브러리의 ReplSerial.read_until()과 ReplSerial.write() 권장
   - input(), print()는 PC에서 pyserial로 데이터를 주고 받을 때 추가 처리 필요
     
-2. xnode 툴의 run 명령으로 작성할 파일을 실행한 후 오류가 없는지 결과 확인
+2. replx 툴의 run 명령으로 작성할 파일을 실행한 후 오류가 없는지 결과 확인
 ```sh
-xnode --sport com11 run -in serial_xnode.py
+replx com4 run --text serial_xnode.py
 ```
-- 문자열을 입력한 후 \<Enter>를 누르면, 실습장비에서 수신한 문자열을 다시 PC로 전송함
-- 오류가 없으면 \<Ctrl>+c를 눌러 xnode 툴 종료 
+- Ctrl+T를 여러 차례 눌러 구분자를 <CR><LF>로 변경 후 문자열을 입력 및 \<Enter>를 누르면, 실습장비에서 수신한 문자열을 다시 PC로 전송함
+- 오류가 없으면 \<Ctrl>+c를 눌러 replx 툴 종료 
 
-3. xnode 툴을 강제로 종료한 후 다시 run -n 명령으로 작성한 파일을 실습장비에 실행 및 xnode 툴 종료
+3. replx 툴을 강제로 종료한 후 다시 run -n 명령으로 작성한 파일을 실습장비에 실행 및 replx 툴 종료
 ```sh
-xnode --sport com4 run -n serial_xnode.py
+replx com4 run -n serial_xnode.py
 ```
 
 4. PC를 위한 새 파일(serial_pc.py)을 만든 후 다음 코드 입력
@@ -124,19 +127,19 @@ python serial_pc.py
 축은 직선 방향을 나타내며 XNode 모트를 바닦에 놓은 상태에서 x, y 축은 IMU 확장에 인쇄된 그램으로 확인, z축은 하늘과 땅을 잇는 선  
 
 ### 실습장비의 IMU 센서값을 PC에서 읽기
-  
+
 **실습장비(imu_xnode.py)**
 ```python
-from xnode.pop.core import Uart
-from xnode.pop.ext import IMU 
+from xnode import ReplSerial
+from xnode.imu import IMU, ACCELERATION
 from time import sleep_ms
 
+serial = ReplSerial()
 imu = IMU() 
-imu.init()  #초기화(반드시 필요함!)
 
 while True:
-    x, y, z = imu.read(IMU.ACCELERATION)
-    Uart.write(x, y, z) #바이트 문자열이 PC로 전달됨. (예: b"-0.4 -0.1 9.4\r\n")
+    x, y, z = imu.read(ACCELERATION)
+    serial.write(b"%f %f %f\r\n" % (x, y, z)) #바이트 문자열이 PC로 전달됨. (예: b"-0.4 -0.1 9.4\r\n")
     sleep_ms(20) #20ms
 ```
 
@@ -167,7 +170,7 @@ while True:
   
 **실습장비(imu_processing_xnode.py)**
 ```python
-from xnode.pop.core import Uart
+from xnode import ReplSerial
 from xnode.pop.ext import IMU 
 import time 
 
@@ -235,7 +238,7 @@ pip install playsound=1.2.2
 
 **실습장비(imu_class_xnode.py)**
 ```python
-from xnode.pop.core import Uart
+from xnode import ReplSerial
 from xnode.pop.ext import IMU
 import time
 
