@@ -131,38 +131,76 @@ python serial_pc.py
 **실습장비(imu_xnode.py)**
 ```python
 from xnode import ReplSerial
-from xnode.imu import IMU, ACCELERATION
+from xnode.imu import IMU
 from time import sleep_ms
 
 serial = ReplSerial()
 imu = IMU() 
 
 while True:
-    x, y, z = imu.read(ACCELERATION)
-    serial.write(b"%f %f %f\r\n" % (x, y, z)) #바이트 문자열이 PC로 전달됨. (예: b"-0.4 -0.1 9.4\r\n")
-    sleep_ms(20) #20ms
+    x, y, z = imu.read(IMU.ACCELERATION)
+    serial.write(b"%6.2f %6.2f %6.2f\r\n" % (x, y, z)) 
+    sleep_ms(20) 
 ```
 
 **PC(imu_pc.py)**
 ```python
-from serial import Serial 
+from serial import Serial, SerialException
 from time import sleep
 
-ser = Serial("com4", 115_200)
+PORT = "COM8"
+BAUDRATE = 115200
 
-while True:
-    ret = ser.readline().decode()
-    x = abs(float(ret.split(' ')[0])) 
-    if x < 1.0:
-        print("small")
-    elif x < 5.0:
-        print("medium")
-    elif x < 10.0:
-        print("large") 
-    else:
-        print("xxx")
+try:
+    # timeout 추가로 무한 대기 방지
+    with Serial(PORT, BAUDRATE, timeout=1) as ser:
+        # 시작 전 기존 버퍼에 쌓인 찌꺼기 데이터 비우기
+        ser.reset_input_buffer()
+        old_state = None
         
-    sleep(20/1000)
+        while True:
+            # 버퍼에 읽을 데이터가 있을 때만 처리 (불필요한 대기 방지)
+            if ser.in_waiting > 0:
+                try:
+                    # errors='ignore'로 깨진 바이트 무시, strip()으로 앞뒤 공백 및 줄바꿈 제거
+                    ret = ser.readline().decode('utf-8', errors='ignore').strip()
+                    
+                    # 빈 문자열이 들어온 경우 건너뛰기
+                    if not ret:
+                        continue
+                        
+                    # 공백 기준으로 분리 후 첫 번째 값을 실수로 변환
+                    x = abs(float(ret.split()[0]))
+                    
+                    if x >= 10.0:
+                        if old_state != "large":
+                            print("large")
+                            old_state = "large"
+                    elif x >= 6.0:
+                        if old_state != "medium":
+                            print("medium")
+                            old_state = "medium"
+                    elif x >= 2.0:
+                        if old_state != "small":
+                            print("small")
+                            old_state = "small"
+                    else:
+                        if old_state != "very small":
+                            print("very small")
+                            old_state = "very small"
+                        
+                except (ValueError, IndexError):
+                    # 숫자로 변환할 수 없는 이상한 데이터가 들어온 경우 무시하고 계속 진행
+                    print(f"[경고] 잘못된 데이터 형식: {ret}")
+                    continue
+            else:
+                # 데이터가 없을 때만 CPU 점유율을 낮추기 위해 짧게 대기
+                sleep(0.005)
+
+except SerialException as e:
+    print(f"시리얼 포트 연결 오류: {e}")
+except KeyboardInterrupt:
+    print("\n프로그램을 종료합니다.")
 ```
 
 ### 프로세싱 구조 적용
@@ -171,20 +209,24 @@ while True:
 **실습장비(imu_processing_xnode.py)**
 ```python
 from xnode import ReplSerial
-from xnode.pop.ext import IMU 
-import time 
+from xnode.imu import IMU
+from time import sleep_ms
 
-imu = IMU()
+serial = None
+imu = None
 
 def setup():
-    imu.init() 
- 
+    global serial, imu
+    serial = ReplSerial()
+    imu = IMU()
+
 def loop():
     x, y, z = imu.read(IMU.ACCELERATION)
-    Uart.write(x, y, z)
-    time.sleep_ms(20)
+    serial.write(b"%0.2f %0.2f %0.2f\r\n" % (x, y, z)) 
+    sleep_ms(20) 
 
-if __name__  == '__main__':
+
+if __name__ == "__main__":
     setup()
     while True:
         loop()
@@ -192,85 +234,166 @@ if __name__  == '__main__':
 
 **PC(imu_processing_pc.py)**
 ```python
-import sys
-import signal
-from serial import Serial
+from serial import Serial, SerialException
 from time import sleep
 
-ser = Serial("com4", 115_200)
+PORT = "COM8"
+BAUDRATE = 115200
+
+ser = None
+old_state = None
 
 def setup():
-    pass
-    
+    global ser
+    try:
+        ser = Serial(PORT, BAUDRATE, timeout=1)
+        ser.reset_input_buffer()
+    except SerialException as e:
+        print(f"시리얼 포트 연결 오류: {e}")
+
 def loop():
-    ret = ser.readline().decode()
+    global old_state
     
-    x = abs(float(ret.split(' ')[0])) 
-    if x < 1.0:
-        print("Safety")
-    elif x < 5.0:
-        print("Caution")
-    elif x < 10.0:
-        print("Danger") 
+    if ser.in_waiting > 0:
+        try:
+            ret = ser.readline().decode('utf-8', errors='ignore').strip()
+            
+            if not ret:
+                return
+                
+            x = abs(float(ret.split()[0]))
+            
+            if x >= 10.0:
+                if old_state != "large":
+                    print("large")
+                    old_state = "large"
+            elif x >= 6.0:
+                if old_state != "medium":
+                    print("medium")
+                    old_state = "medium"
+            elif x >= 2.0:
+                if old_state != "small":
+                    print("small")
+                    old_state = "small"
+            else:
+                if old_state != "very small":
+                    print("very small")
+                    old_state = "very small"
+                
+        except (ValueError, IndexError):
+            print(f"[경고] 잘못된 데이터 형식: {ret}")
     else:
-        print("Calamity")
-        
-    sleep(20/1000)
+        sleep(0.005)    
 
-def cleanup(*args):
-    ser.close()
-    sys.exit(0)
-
-if __name__  == '__main__':
-    signal.signal(signal.SIGINT, self.cleanup)
+if __name__ == "__main__":
     setup()
-    while True:
-        loop()
+    try:
+        while True:
+            loop()
+    except KeyboardInterrupt:
+        print("\n프로그램을 종료합니다.")
+        if ser is not None:
+            ser.close()
 ```
 
 ### 클래스로 확장
 가속도 값의 크기에 따라 PC에서 해당 음악 재생  
-음악 재생을 위해 다음과 같이 playsound 라이브러리를 설치한 후 재생할  MP3 음악 파일 준비
-
-```sh
-pip install playsound=1.2.2
-```
 
 **실습장비(imu_class_xnode.py)**
 ```python
 from xnode import ReplSerial
-from xnode.pop.ext import IMU
-import time
+from xnode.imu import IMU
+from time import sleep_ms
 
 class Processing:
     def __init__(self):
         self.setup()
         while True:
             self.loop()
-    
+        
     def setup(self):
+        self.serial = ReplSerial()
         self.imu = IMU()
-        self.imu.init()
-    
+
     def loop(self):
         x, y, z = self.imu.read(IMU.ACCELERATION)
-        Uart.write(x, y, z)
-        time.sleep_ms(20)
+        self.serial.write(b"%6.2f %6.2f %6.2f\r\n" % (x, y, z)) 
+        sleep_ms(20) 
+
 
 if __name__ == "__main__":
     Processing()
 ```
 
+**PC(music_download.py)**
+- ffmpeg 툴과 yt-dlp와 miniaudio 패키지 설치 
+
+```sh
+winget install Gyan.FFmpeg -s winget
+
+pip install yt-dlp
+pip install miniaudio
+```
+
+- 재생할 MP3 오디오 파일 수집
+
+```python
+import yt_dlp
+
+# 다운로드할 목표 파일명 리스트 (검색어로도 활용)
+song_list = [
+    "beatles_yellow_submarine",
+    "led_zeppelin_stairway_to_heaven",
+    "acdc_thunderstruck",
+]
+
+def download_audio(track_names):
+    for name in track_names:
+        # 파일명의 '_'를 공백으로 변환하여 검색어 생성
+        search_query = f"ytsearch1:{name.replace('_', ' ')} official audio"
+        
+        ydl_opts = {
+            # 최고 음질의 오디오 스트림 선택
+            'format': 'bestaudio/best',
+            # 저장될 파일 경로 및 이름 지정 (확장자는 후처리기에서 자동 부여)
+            'outtmpl': f'{name}.%(ext)s',
+            # 플레이리스트가 검색될 경우 단일 영상만 다운로드
+            'noplaylist': True,
+            # FFmpeg를 이용해 MP3(192kbps)로 추출
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+        }
+
+        print(f"[다운로드 시작] {name}.mp3 검색 중...")
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([search_query])
+            print(f"[완료] {name}.mp3 저장 성공\n")
+        except Exception as e:
+            print(f"[오류] {name} 다운로드 실패: {e}\n")
+
+if __name__ == "__main__":
+    download_audio(song_list)
+```
+
 **PC(imu_class_pc.py)**
-> 클래스 상속을 통한 오버라이딩 기법 적용
+가속도 세기에 따른 MP3 오디오 파일 재생  
+- 클래스 상속을 통한 오버라이딩 기법 적용
 
 ```python
 import sys
 import time
+import math
 import signal
-import playsound
-from serial import Serial
-from multiprocessing import Process
+from pathlib import Path
+from collections import deque
+
+import miniaudio
+from serial import Serial, SerialException
+
 
 class Processing:
     def __init__(self):
@@ -278,7 +401,7 @@ class Processing:
         self.setup()
         while True:
             self.loop()
-    
+
     def setup(self):
         print("call setup")
 
@@ -289,40 +412,184 @@ class Processing:
     def cleanup(self, *args):
         sys.exit(0)
 
+
 class SimpleMp3Player(Processing):
-    def __init__(self):
+    BASE_DIR = Path(__file__).resolve().parent
+
+    # 4단계 흔들기 강도 임계값 (단위: m/s^2)
+    TH_WEAK = 3.5      # 1단계: 3.5 ~ 11.9 (1번 곡)
+    TH_MEDIUM = 12.0   # 2단계: 12.0 ~ 18.4 (2번 곡)
+    TH_STRONG = 18.5   # 3단계: 18.5 ~ 25.9 (3번 곡)
+    TH_STOP = 26.0     # 4단계: 26.0 이상 초강력 흔들기 (음악 정지)
+    SETTLE_SEC = 0.4   # 손을 멈췄다고 판정할 대기 시간 (초)
+
+    SAMPLE_RATE = 44100
+    CHANNELS = 2
+    SAMPLE_FORMAT = miniaudio.SampleFormat.SIGNED16
+
+    def __init__(self, port="com8", baudrate=115200):
+        self.port = port
+        self.baudrate = baudrate
+        self.ser = None
+        self.device = None
+        self._active_stream = None
         super().__init__()
-    
+
     def setup(self):
-        self.ser = Serial("com4", 115_200)
-        self.flags = 0.0
-        self.process = None
-    
-    def loop(self):   # "-0.14 0.15 1.5\r\n" --> ["-0.14", "0.15", "1.5\r"]
-        x = abs(float(self.ser.readline().decode().split(" ")[0]))
-        if self.flags != x:
-            self.flags = x
-            
-        if 5.0 < self.flags <= 7.0:
-            if self.process:
-                self.process.terminate()
-            self.process = Process(target=playsound.playsound, args=("beatles_yellow_submarine.mp3",))
-            self.process.start()
-        elif 7.0 < self.flags <= 10.0:
-            if self.process:
-                self.process.terminate()
-            self.process = Process(target=playsound.playsound, args=("led_zeppelin_stairway_to_heaven.mp3",))
-            self.process.start()
-        elif 10.0 < self.flags:
-            if self.process:
-                self.process.terminate()
-            self.process = Process(target=playsound.playsound, args=("acdc_thunderstruck.mp3",))
-            self.process.start()
+        try:
+            self.ser = Serial(self.port, self.baudrate, timeout=1)
+            self.ser.reset_input_buffer()
+        except SerialException as e:
+            print(f"시리얼 포트 연결 오류: {e}")
+            sys.exit(1)
+
+        self.device = miniaudio.PlaybackDevice(
+            output_format=self.SAMPLE_FORMAT,
+            nchannels=self.CHANNELS,
+            sample_rate=self.SAMPLE_RATE,
+        )
+
+        self.confirmed_flags = None         # 현재 재생 중인 곡 단계 (1, 2, 3 또는 정지 시 None)
+        self.window = deque(maxlen=15)      # 최근 15개 데이터(약 0.3초) 이동 평균 버퍼
+        self.peak_level = 0                 # 한 번 흔드는 동안 도달한 최고 강도 단계 (1~4)
+        self.peak_mag = 0.0                 # 디버깅 확인용 최고 가속도 수치
+        self.last_active_time = 0.0         # 마지막으로 흔들림이 감지된 시각
+
+        print(f"[{self.port}] 연결 완료 (무한 반복 / 초강력 흔들기 정지 모드).")
+
+    def loop(self):
+        if self.ser.in_waiting <= 0:
+            time.sleep(0.005)
+            return
+
+        while self.ser.in_waiting > 0:
+            line = self.ser.readline().decode("utf-8", errors="ignore").strip()
+            parts = line.split()
+            if len(parts) != 3:
+                continue
+
+            try:
+                x, y, z = (float(n) for n in parts)
+            except ValueError:
+                continue
+
+            raw_magnitude = math.hypot(x, y, z)
+            self.window.append(raw_magnitude)
+
+        if len(self.window) < 5:
+            return
+
+        smooth_magnitude = sum(self.window) / len(self.window)
+
+        match smooth_magnitude:
+            case m if m >= self.TH_STOP:
+                level = 4
+            case m if m >= self.TH_STRONG:
+                level = 3
+            case m if m >= self.TH_MEDIUM:
+                level = 2
+            case m if m >= self.TH_WEAK:
+                level = 1
+            case _:
+                level = 0
+
+        now = time.monotonic()
+
+        if level > 0:
+            if level > self.peak_level:
+                self.peak_level = level
+            if smooth_magnitude > self.peak_mag:
+                self.peak_mag = smooth_magnitude
+            self.last_active_time = now
+
+        elif self.peak_level > 0 and (now - self.last_active_time) >= self.SETTLE_SEC:
+            target_flag = self.peak_level
+            recorded_peak = self.peak_mag
+            self.peak_level = 0
+            self.peak_mag = 0.0
+
+            # 4단계(초강력 흔들기): 음악 즉시 정지 및 플래그 초기화
+            if target_flag == 4:
+                was_playing = self.confirmed_flags is not None
+                self._stop_music()
+                self.confirmed_flags = None
+
+                if was_playing:
+                    print(f"[음악 정지] 초강력 흔들기 감지 (최고 강도: {recorded_peak:.1f} m/s^2)")
+                else:
+                    print(f"[대기 유지] 이미 정지 상태입니다 (최고 강도: {recorded_peak:.1f} m/s^2)")
+                return
+
+            # 1~3단계: 현재 재생 중인 단계와 다를 때만 새 음악 재생
+            if target_flag != self.confirmed_flags:
+                print(f"Confirmed flag: {target_flag} (최고 강도: {recorded_peak:.1f} m/s^2)")
+
+                tracks = {
+                    1: "beatles_yellow_submarine.mp3",
+                    2: "led_zeppelin_stairway_to_heaven.mp3",
+                    3: "acdc_thunderstruck.mp3",
+                }
+                if self._play(tracks[target_flag]):
+                    self.confirmed_flags = target_flag
+
+    def _looping_stream(self, filepath: Path):
+        """MP3 파일이 끝나면 자동으로 처음부터 다시 이어 붙이는 무한 반복 제너레이터"""
+        required_frames = yield b""
+        raw_stream = None
+        try:
+            while True:
+                raw_stream = miniaudio.stream_file(
+                    str(filepath),
+                    output_format=self.SAMPLE_FORMAT,
+                    nchannels=self.CHANNELS,
+                    sample_rate=self.SAMPLE_RATE,
+                )
+                next(raw_stream)
+                while True:
+                    try:
+                        chunk = raw_stream.send(required_frames)
+                    except StopIteration:
+                        break
+                    required_frames = yield chunk
+        finally:
+            if raw_stream is not None:
+                raw_stream.close()
+
+    def _stop_music(self):
+        """순수하게 오디오 출력과 스트림 자원만 정리합니다 (플래그 상태는 변경하지 않음)."""
+        if self.device is not None:
+            self.device.stop()
+        if self._active_stream is not None:
+            self._active_stream.close()
+            self._active_stream = None
+
+    def _play(self, filename: str) -> bool:
+        filepath = self.BASE_DIR / filename
+        if not filepath.is_file():
+            print(f"[경고] 파일을 찾을 수 없습니다: {filepath.name}")
+            return False
+
+        self._stop_music()
+
+        stream = self._looping_stream(filepath)
+        next(stream)
+
+        self._active_stream = stream
+        self.device.start(self._active_stream)
+        return True
 
     def cleanup(self, *args):
-        ser.close()
-        suprt().cleanup()
-            
+        print("\n프로그램을 종료합니다.")
+        self._stop_music()
+        self.confirmed_flags = None
+        if self.device is not None:
+            self.device.close()
+            self.device = None
+        if self.ser is not None and self.ser.is_open:
+            self.ser.close()
+        super().cleanup()
+
+
 if __name__ == "__main__":
     SimpleMp3Player()
 ```
